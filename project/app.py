@@ -7,13 +7,26 @@ from plotly.subplots import make_subplots
 import plotly.express as px
 import os
 import re
+from pathlib import Path
 
 st.set_page_config(page_title="Visual Analytics · E-commerce", page_icon="📊", layout="wide")
 
-def load_css(file_path):
-    if os.path.exists(file_path):
-        with open(file_path, "r") as f:
+def load_css(file_name):
+    # 1. Obtenemos la ruta absoluta de la carpeta donde está este archivo app.py
+    current_dir = Path(__file__).parent
+    
+    # 2. Construimos la ruta absoluta hacia el archivo CSS
+    file_path = current_dir / file_name
+    
+    # 3. Comprobamos e inyectamos
+    if file_path.exists():
+        with open(file_path, "r", encoding="utf-8") as f:
             st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+    else:
+        # Esto te ayudará a ver en la pantalla si la ruta está fallando y cuál está buscando
+        st.warning(f"⚠️ No se encontró el archivo de estilos en: {file_path}")
+
+# Invocamos la función pasándole solo la ruta relativa interna
 load_css("assets/styles.css")
 
 
