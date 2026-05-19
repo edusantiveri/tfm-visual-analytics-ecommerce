@@ -11,7 +11,7 @@ El sistema es una plataforma interactiva de *Visual Data Wrangling* que unifica 
 
 Para facilitar la evaluación por parte del tribunal y evitar configuraciones locales, la aplicación se encuentra totalmente operativa en la nube a través del siguiente enlace:
 
-👉 **[Accede aquí a la Aplicación en Streamlit Cloud]([https://tu-proyecto-tfm.streamlit.app](https://tfm-visual-analytics-ecommerce-cgemexpthcsw95wwl2nf4f.streamlit.app/])** 
+👉 **[Accede aquí a la Aplicación en Streamlit Cloud]([https://tu-proyecto-tfm.streamlit.app]https://tfm-visual-analytics-ecommerce-cgemexpthcsw95wwl2nf4f.streamlit.app/])** 
 
 ---
 
