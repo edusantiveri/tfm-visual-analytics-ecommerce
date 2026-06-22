@@ -190,7 +190,7 @@ def apply_auto_cleaning(df: pd.DataFrame) -> tuple[pd.DataFrame, list[dict]]:
     return df, log
 
 
-def render_auto_cleaning_log(log: list[dict]):
+def render_auto_cleaning_log(log: list[dict], key_suffix: str = ""):
     if not log:
         st.markdown('<div class="quality-ok">✅ Sin cambios automáticos necesarios</div>',
                     unsafe_allow_html=True)
@@ -201,9 +201,11 @@ def render_auto_cleaning_log(log: list[dict]):
         for i, e in enumerate(log, 1):
             st.markdown(f"**{i}. {e['tipo']}** — _{e['descripcion']}_ — `{e['impacto']}`")
         log_df = pd.DataFrame(log)
+
+
         st.download_button("⬇️ Descargar log Capa 1 (CSV)",
                            data=log_df.to_csv(index=False).encode("utf-8"),
-                           file_name="log_capa1.csv", mime="text/csv")
+                           file_name="log_capa1.csv", mime="text/csv", key=f"download_log_capa1_{key_suffix}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -671,10 +673,6 @@ def render_capa2(fname: str):
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CAPA 3 — DASHBOARD DE KPIs + EXPORTACIÓN
-# Justificación académica:
-#   Heer & Shneiderman (2012): especificación de datos, manipulación de vistas
-#   y gestión del proceso analítico como pilares del VA interactivo.
-#   Bačić & Fadlalla (2016): reducción de carga cognitiva en dashboards.
 # ══════════════════════════════════════════════════════════════════════════════
 
 _PLOT_CFG = dict(
@@ -717,14 +715,15 @@ def _render_kpi_cards(df: pd.DataFrame):
                     if facturacion and n_pedidos else None)
     unidades     = int(df["quantity"].sum()) if has_qty  else None
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4 = st.columns([1.6, 1.2, 1, 1])
+
     c1.metric("💰 Facturación total",
               f"€{facturacion:,.2f}" if facturacion is not None else "—")
     c2.metric("🧾 Ticket medio",
               f"€{ticket_medio:,.2f}" if ticket_medio is not None else "—")
     c3.metric("📦 Pedidos únicos",
               f"{n_pedidos:,}" if n_pedidos is not None else "—")
-    c4.metric("📊 Unidades vendidas",
+    c4.metric("🛒 Unidades vendidas",
               f"{unidades:,}" if unidades is not None else "—")
 
 
@@ -886,6 +885,285 @@ def _render_top_products(df: pd.DataFrame, fname: str):
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
+# ── Funciones exclusivas del dashboard estructurado ───────────────────────────
+ 
+def _render_dual_timeline(df: pd.DataFrame, fname: str):
+    """
+    Bloque 2 — Dos gráficas temporales lado a lado:
+      - Izquierda: Crecimiento acumulado de revenue (%)
+      - Derecha:   Revenue por periodo (barras)
+    Justificación: Heer & Shneiderman (2012) — manipulación de vistas
+    como mecanismo central del análisis visual interactivo.
+    """
+    if "_revenue" not in df.columns or "date" not in df.columns:
+        st.info("ℹ️ Se necesitan `date`, `price` y `quantity` para las gráficas temporales.")
+        return
+ 
+    df_ok = df.dropna(subset=["date", "_revenue"])
+    if df_ok.empty:
+        st.warning("No hay datos de fecha y revenue válidos.")
+        return
+ 
+    st.markdown("**Evolución temporal**")
+    gran = st.radio(
+        "Granularidad",
+        ["Diaria", "Semanal", "Mensual"],
+        horizontal=True,
+        key=f"c3_dual_gran_{fname}",
+    )
+    freq = {"Diaria": "D", "Semanal": "W", "Mensual": "ME"}[gran]
+ 
+    ts = (df_ok.set_index("date")["_revenue"]
+          .resample(freq).sum()
+          .reset_index()
+          .rename(columns={"date": "periodo", "_revenue": "revenue"}))
+ 
+    # Crecimiento acumulado
+    ts["acumulado"] = ts["revenue"].cumsum()
+    ts["crecimiento_pct"] = (ts["acumulado"] / ts["acumulado"].iloc[0] * 100
+                             if len(ts) > 0 else 0)
+ 
+    col_left, col_right = st.columns(2, gap="medium")
+ 
+    # Gráfica izquierda: crecimiento acumulado
+    with col_left:
+        fig1 = go.Figure()
+        fig1.add_trace(go.Scatter(
+            x=ts["periodo"], y=ts["acumulado"],
+            mode="lines+markers",
+            name="Revenue acumulado",
+            line=dict(color="#4A90E2", width=2.5),
+            marker=dict(size=5),
+            fill="tozeroy",
+            fillcolor="rgba(74,144,226,0.1)",
+        ))
+        fig1.update_layout(
+            **_PLOT_CFG,
+            title="Crecimiento acumulado de revenue",
+            xaxis=dict(title="", showgrid=False),
+            yaxis=dict(title="€ acumulado", showgrid=True, gridcolor=_GRID),
+            height=300,
+            showlegend=False,
+        )
+        st.plotly_chart(fig1, use_container_width=True, config={"displayModeBar": False})
+ 
+    # Gráfica derecha: revenue por periodo con tendencia
+    with col_right:
+        ts["tendencia"] = ts["revenue"].rolling(3, min_periods=1).mean()
+        fig2 = go.Figure()
+        fig2.add_trace(go.Bar(
+            x=ts["periodo"], y=ts["revenue"],
+            name="Revenue", marker_color="#50C878", opacity=0.75,
+        ))
+        fig2.add_trace(go.Scatter(
+            x=ts["periodo"], y=ts["tendencia"],
+            name="Tendencia (×3)",
+            line=dict(color="#E2904A", width=2, dash="dot"),
+            mode="lines",
+        ))
+        fig2.update_layout(
+            **_PLOT_CFG,
+            title=f"Revenue por periodo ({gran.lower()})",
+            xaxis=dict(title="", showgrid=False),
+            yaxis=dict(title="€", showgrid=True, gridcolor=_GRID),
+            height=300,
+        )
+        st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
+ 
+ 
+def _render_top_products_toggle(df: pd.DataFrame, fname: str):
+    """
+    Bloque 3 — Top productos con toggle entre revenue y unidades.
+    El usuario cambia la métrica con un radio button, sin recargar la página.
+    """
+    prod_col = next((c for c in ["product", "product_id"] if c in df.columns), None)
+    if prod_col is None:
+        st.info("ℹ️ Se necesita columna `product` o `product_id` para el ranking de productos.")
+        return
+    if "_revenue" not in df.columns and "quantity" not in df.columns:
+        return
+ 
+    n_unique = df[prod_col].nunique()
+    if n_unique <= 1:
+        return
+ 
+    st.markdown("**Top productos**")
+ 
+    ctrl_col, slider_col = st.columns([2, 2], gap="large")
+    with ctrl_col:
+        metrica = st.radio(
+            "Ordenar por",
+            ["Revenue (€)", "Unidades vendidas"],
+            horizontal=True,
+            key=f"c3_toggle_{fname}",
+        )
+    with slider_col:
+        n_top = st.slider(
+            "Número de productos",
+            min_value=5,
+            max_value=min(25, n_unique),
+            value=min(10, n_unique),
+            key=f"c3_ntop_{fname}",
+        )
+ 
+    if metrica == "Revenue (€)" and "_revenue" in df.columns:
+        top = (df.groupby(prod_col)["_revenue"]
+               .sum().nlargest(n_top).reset_index()
+               .rename(columns={prod_col: "producto", "_revenue": "valor"}))
+        xlabel = "Revenue (€)"
+        color  = "#4A90E2"
+        fmt    = [f"€{v:,.0f}" for v in top["valor"]]
+ 
+    else:  # Unidades
+        if "quantity" not in df.columns:
+            st.info("ℹ️ Columna `quantity` no disponible.")
+            return
+        top = (df.groupby(prod_col)["quantity"]
+               .sum().nlargest(n_top).reset_index()
+               .rename(columns={prod_col: "producto", "quantity": "valor"}))
+        xlabel = "Unidades vendidas"
+        color  = "#50C878"
+        fmt    = [f"{int(v):,} uds" for v in top["valor"]]
+ 
+    fig = go.Figure(go.Bar(
+        x=top["valor"],
+        y=top["producto"],
+        orientation="h",
+        marker_color=color,
+        opacity=0.85,
+        text=fmt,
+        textposition="outside",
+    ))
+    fig.update_layout(
+        **_PLOT_CFG,
+        title=f"Top {n_top} productos — {xlabel}",
+        xaxis=dict(title=xlabel, showgrid=True, gridcolor=_GRID),
+        yaxis=dict(title="", autorange="reversed"),
+        height=max(280, n_top * 40 + 80),
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+ 
+ 
+def _render_avg_price_by_product(df: pd.DataFrame, fname: str):
+    """
+    Bloque 4 — Precio medio por producto (barras horizontales).
+    Útil para detectar inconsistencias de precio en el mismo SKU,
+    que es un indicador de calidad de datos directamente relacionado con RQ2.
+    """
+    prod_col = next((c for c in ["product", "product_id"] if c in df.columns), None)
+    if prod_col is None or "price" not in df.columns:
+        st.info("ℹ️ Se necesitan `product`/`product_id` y `price` para esta gráfica.")
+        return
+    if not pd.api.types.is_numeric_dtype(df["price"]):
+        return
+ 
+    n_unique = df[prod_col].nunique()
+    if n_unique <= 1:
+        return
+ 
+    st.markdown("**Precio medio por producto**")
+ 
+    n_top = st.slider(
+        "Número de productos a mostrar",
+        min_value=5,
+        max_value=min(25, n_unique),
+        value=min(15, n_unique),
+        key=f"c3_avgprice_{fname}",
+    )
+ 
+    avg_price = (df.groupby(prod_col)["price"]
+                 .agg(precio_medio="mean", precio_min="min", precio_max="max",
+                      n_registros="count")
+                 .reset_index()
+                 .rename(columns={prod_col: "producto"})
+                 .sort_values("precio_medio", ascending=False)
+                 .head(n_top)
+                 .sort_values("precio_medio", ascending=True))  # barras de menor a mayor
+ 
+    fig = go.Figure()
+ 
+    # Rango min-max como banda de error horizontal
+    fig.add_trace(go.Scatter(
+        x=avg_price["precio_max"],
+        y=avg_price["producto"],
+        mode="markers",
+        name="Precio máximo",
+        marker=dict(color="#E25252", symbol="line-ew", size=10, line=dict(width=2)),
+        showlegend=True,
+    ))
+    fig.add_trace(go.Scatter(
+        x=avg_price["precio_min"],
+        y=avg_price["producto"],
+        mode="markers",
+        name="Precio mínimo",
+        marker=dict(color="#50C878", symbol="line-ew", size=10, line=dict(width=2)),
+        showlegend=True,
+    ))
+ 
+    # Líneas de rango
+    for _, row in avg_price.iterrows():
+        fig.add_shape(
+            type="line",
+            x0=row["precio_min"], x1=row["precio_max"],
+            y0=row["producto"],  y1=row["producto"],
+            line=dict(color=_GRID, width=1.5),
+        )
+ 
+    # Precio medio (punto principal)
+    fig.add_trace(go.Scatter(
+        x=avg_price["precio_medio"],
+        y=avg_price["producto"],
+        mode="markers+text",
+        name="Precio medio",
+        marker=dict(color="#4A90E2", size=10),
+        text=[f"€{v:.2f}" for v in avg_price["precio_medio"]],
+        textposition="middle right",
+        showlegend=True,
+    ))
+ 
+    fig.update_layout(
+        **_PLOT_CFG,
+        title=f"Precio medio por producto (top {n_top}) — con rango min/max",
+        xaxis=dict(title="Precio (€)", showgrid=True, gridcolor=_GRID),
+        yaxis=dict(title=""),
+        height=max(300, n_top * 38 + 100),
+        
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+ 
+    # Alerta si hay productos con rango de precio muy amplio (posible error de datos)
+    avg_price["rango"] = avg_price["precio_max"] - avg_price["precio_min"]
+    sospechosos = avg_price[avg_price["rango"] > avg_price["precio_medio"] * 0.5]
+    if not sospechosos.empty:
+        with st.expander(
+            f"⚠️ {len(sospechosos)} producto(s) con rango de precio amplio (>50% del precio medio)",
+            expanded=False
+        ):
+            st.caption(
+                "Estos productos tienen variación de precio inusualmente alta, "
+                "lo que puede indicar errores de entrada o cambios de precio no controlados."
+            )
+            st.dataframe(
+                sospechosos[["producto", "precio_medio", "precio_min",
+                              "precio_max", "rango", "n_registros"]]
+                .rename(columns={
+                    "producto":     "Producto",
+                    "precio_medio": "Precio medio (€)",
+                    "precio_min":   "Mínimo (€)",
+                    "precio_max":   "Máximo (€)",
+                    "rango":        "Rango (€)",
+                    "n_registros":  "N registros",
+                })
+                .style.format({
+                    "Precio medio (€)": "€{:.2f}",
+                    "Mínimo (€)":       "€{:.2f}",
+                    "Máximo (€)":       "€{:.2f}",
+                    "Rango (€)":        "€{:.2f}",
+                })
+                .background_gradient(subset=["Rango (€)"], cmap="Reds"),
+                use_container_width=True,
+                hide_index=True,
+            )
 
 def _render_export(fname: str, df_clean: pd.DataFrame):
     """Exportación del dataset limpio + log de auditoría completo."""
@@ -932,10 +1210,7 @@ def render_capa3(fname: str, df: pd.DataFrame):
     df = DataFrame post Capa 2 (ya limpio).
     """
     st.markdown("### 📊 Capa 3 — Dashboard de KPIs")
-    st.caption(
-        "Visualizaciones generadas automáticamente sobre los datos limpios. "
-        "Responde a RQ1 (reducción de tiempo) y RQ3 (efectividad visual)."
-    )
+    
 
     has_price    = ("price"    in df.columns
                     and pd.api.types.is_numeric_dtype(df["price"]))
@@ -948,39 +1223,44 @@ def render_capa3(fname: str, df: pd.DataFrame):
             "Comprueba que la Capa 1 ha inferido los tipos correctamente."
         )
         return
+    
+    dash_key = f"dashboard_active_{fname}"
+    if dash_key not in st.session_state:
+        st.session_state[dash_key] = False
+ 
+    if not st.session_state[dash_key]:
+        st.caption("Los datos están limpios y listos. Pulsa para generar el dashboard.")
+        if st.button("🚀 Generar dashboard", key=f"btn_dash_{fname}", type="primary"):
+            st.session_state[dash_key] = True
+            st.rerun()
+        return
 
-    # Nivel 1: KPI cards
+   
+
+    df = _add_revenue(_ensure_date(df))
+
+   # ── Bloque 1: 4 tarjetas KPI ──────────────────────────────────────────────
     _render_kpi_cards(df)
     st.markdown("---")
-
-    # Nivel 2: Evolución temporal
-    _render_timeline(df, fname)
+ 
+    # ── Bloque 2: 2 gráficas temporales ──────────────────────────────────────
+    _render_dual_timeline(df, fname)
     st.markdown("---")
-
-    # Nivel 3 + 4: Categorías y status en columnas si ambos existen
-    has_cat    = "category" in df.columns
-    has_status = "status"   in df.columns
-
-    if has_cat and has_status:
-        col_cat, col_st = st.columns([2, 1], gap="medium")
-        with col_cat:
-            _render_category(df)
-        with col_st:
-            _render_status(df)
-    elif has_cat:
-        _render_category(df)
-    elif has_status:
-        _render_status(df)
-
-    # Nivel 5: Top productos
-    prod_col = next((c for c in ["product", "product_id"] if c in df.columns), None)
-    if prod_col and df[prod_col].nunique() > 1:
-        st.markdown("---")
-        _render_top_products(df, fname)
-
-    # Exportación
+ 
+    # ── Bloque 3: Top productos con toggle revenue / unidades ─────────────────
+    _render_top_products_toggle(df, fname)
     st.markdown("---")
+ 
+    # ── Bloque 4: Precio medio por producto ───────────────────────────────────
+    _render_avg_price_by_product(df, fname)
+    st.markdown("---")
+ 
+    # ── Exportación ───────────────────────────────────────────────────────────
     _render_export(fname, df)
+ 
+    if st.button("↩ Cerrar dashboard", key=f"btn_close_{fname}"):
+        st.session_state[dash_key] = False
+        st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1045,7 +1325,7 @@ with col_upload:
         type=["csv", "xlsx", "json", "xml"],
         accept_multiple_files=True,
         key=f"uploader_{st.session_state['uploader_key']}",
-        help="Máximo 150 MB. JSON y XML deben tener estructura tabular.",
+        help="Máximo 200 MB. JSON y XML deben tener estructura tabular.",
     )
     if st.button("🗑 Limpiar lista de subida"):
         reset_uploader()
@@ -1086,12 +1366,12 @@ with col_upload:
                         st.rerun()
 
                 # PASO 1 — EDA en bruto
-                render_eda(df_raw, "📊 EDA")
+                render_eda(df_raw, "🔍 EDA (Análisis Exploratorio de Datos)")
                 st.markdown("---")
 
                 # PASO 2 — Capa 1
                 st.markdown("### 🔧 Capa 1 — Limpieza automática")
-                render_auto_cleaning_log(log_c1)
+                render_auto_cleaning_log(log_c1, key_suffix=fname)
                 if log_c1:
                     st.markdown("")
                     
@@ -1120,70 +1400,133 @@ with col_upload:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def auto_merge_datasets(datasets: dict) -> pd.DataFrame | None:
-    dfs = list(datasets.values())
-    if not dfs:
+    if not datasets:
         return None
+
+    dfs = list(datasets.values())
+
+    # 🔵 CASO 1: todos tienen las mismas columnas → concatenación temporal (asociación de filas)
+    all_same_schema = all(set(df.columns) == set(dfs[0].columns) for df in dfs)
+
+    if all_same_schema:
+        dfs_con_origen = []
+        for fname, df in datasets.items():
+            # 1. Copiamos para no alterar el dataset original en la session_state
+            df_temp = df.copy()
+            # 2. Asignamos el nombre del archivo (Pandas lo repite automáticamente en cada fila)
+            df_temp["source_file"] = fname
+            dfs_con_origen.append(df_temp)
+        
+        # 3. Concatenamos todos los DataFrames ya etiquetados
+        combined = pd.concat(dfs_con_origen, ignore_index=True)
+        return combined
+
+    # 🟡 CASO 2: merge relacional (añadir columnas mediante IDs comunes)
     dfs = sorted(dfs, key=lambda x: x.shape[1], reverse=True)
     base_df = dfs[0].copy()
+
     used = [False] * len(dfs)
     used[0] = True
+
     merged = True
     while merged:
         merged = False
         for i, df in enumerate(dfs):
             if used[i]:
                 continue
+
             common_cols = list(set(base_df.columns) & set(df.columns))
             join_keys = [col for col in common_cols if "id" in col.lower()]
+
             if join_keys:
-                try:
-                    base_df = base_df.merge(df, on=join_keys, how="left",
-                                            suffixes=("", "_dup"))
-                    base_df = base_df[[c for c in base_df.columns
-                                       if not c.endswith("_dup")]]
-                    used[i] = True
-                    merged = True
-                except Exception as e:
-                    st.warning(f"No se pudo unir un dataset: {e}")
+                base_df = base_df.merge(df, on=join_keys, how="left")
+                used[i] = True
+                merged = True
+
     return base_df
 
 
 if len(st.session_state["datasets_c2"]) > 1:
-    st.markdown("---")
-    st.markdown("## 🔗 Dataset unificado")
-    st.caption("Une automáticamente los ficheros usando columnas ID como clave de join.")
+        st.markdown("---")
+        st.markdown("## 🔗 Dataset unificado")
+        st.caption(
+            "Une automáticamente los ficheros usando columnas ID como clave de join."
+        )
 
-    if st.button("Generar dataset combinado"):
-        merged_df = auto_merge_datasets(st.session_state["datasets_c2"])
+        if "merged_dataset" not in st.session_state:
+            st.session_state["merged_dataset"] = None
 
-        if merged_df is not None and not merged_df.empty:
+        if st.button("Generar dataset combinado"):
+            merged_df = auto_merge_datasets(
+                st.session_state["datasets_c2"]
+            )
+
+            if merged_df is not None:
+                st.session_state["merged_dataset"] = merged_df
+                st.rerun()
+
+        merged_df = st.session_state.get("merged_dataset")
+
+        if merged_df is not None:
             st.success("✅ Datasets combinados correctamente")
+
             rep = profile_dataframe(merged_df)
+
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Filas",      f"{merged_df.shape[0]:,}")
-            col2.metric("Columnas",   merged_df.shape[1])
-            col3.metric("Nulos",      rep["nulos"])
+            col1.metric("Filas", f"{merged_df.shape[0]:,}")
+            col2.metric("Columnas", merged_df.shape[1])
+            col3.metric("Nulos", rep["nulos"])
             col4.metric("Duplicados", rep["duplicados"])
 
             if {"price", "quantity"}.issubset(merged_df.columns):
-                merged_df["revenue"] = merged_df["price"] * merged_df["quantity"]
-                st.markdown("### 📊 KPIs del dataset combinado")
+                merged_df["revenue"] = (
+                    merged_df["price"] * merged_df["quantity"]
+                )
+
+                
+
                 k1, k2, k3 = st.columns(3)
-                k1.metric("💰 Revenue total",  f"€{merged_df['revenue'].sum():,.2f}")
+
+                k1.metric(
+                    "💰 Revenue total",
+                    f"€{merged_df['revenue'].sum():,.2f}"
+                )
+
                 if "order_id" in merged_df.columns:
-                    k2.metric("🧾 Pedidos únicos", f"{merged_df['order_id'].nunique():,}")
-                k3.metric("📦 Unidades", f"{int(merged_df['quantity'].sum()):,}")
+                    k2.metric(
+                        "🧾 Pedidos únicos",
+                        f"{merged_df['order_id'].nunique():,}"
+                    )
+
+                k3.metric(
+                    "📦 Unidades",
+                    f"{int(merged_df['quantity'].sum()):,}"
+                )
 
             st.markdown("### Vista previa")
-            st.dataframe(merged_df.head(), use_container_width=True)
-            st.download_button(
-                "⬇️ Descargar dataset combinado (CSV)",
-                data=merged_df.to_csv(index=False).encode("utf-8"),
-                file_name="dataset_combinado.csv",
-                mime="text/csv",
+            st.dataframe(
+                merged_df.head(),
+                use_container_width=True
             )
-        else:
-            st.warning("⚠️ No se pudieron combinar los datasets.")
+
+            st.markdown("---")
+
+            render_capa3(
+                "dataset_combinado",
+                merged_df
+            )
+
+            if merged_df is not None and not merged_df.empty:
+                st.download_button(
+                    "⬇️ Descargar dataset combinado (CSV)",
+                    data=merged_df.to_csv(index=False).encode("utf-8"),
+                    file_name="dataset_combinado.csv",
+                    mime="text/csv",
+                )
+
+            
+    
+            
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1203,10 +1546,10 @@ with col_info:
     st.markdown("---")
     st.subheader("Flujo de procesamiento")
     for i, step in enumerate([
-        "EDA inicial — datos en bruto tal como llegan.",
-        "Capa 1 — limpieza automática: tipos, espacios, columnas fantasma.",
-        "Capa 2 — tú decides: duplicados, nulos, outliers con impacto en KPIs.",
-        "Capa 3 — dashboard de KPIs interactivo + exportación.",
+        "EDA inicial — Análisis exploratorio de los datos en bruto y detección de imperfecciones ",
+        "Capa 1 — Limpieza automática: Estandarización de nombres de columnas, normalización de strings, eliminación de filas completamente vacías y columnas fantasma, e inferencia automática de tipos de datos.",
+        "Capa 2 — Limpieza asistida: Toma de decisiones interactivas e imputación/exclusión asistida de nulos, duplicados y outliers con previsualización de impacto financiero en KPIs en tiempo real.",
+        "Capa 3 — Dashboard de KPIs interactivo: Visualización de tarjetas métricas, evolución temporal personalizable (Diaria, Semanal, Mensual) y desglose dinámico por categorías.",
     ], 1):
         st.markdown(
             f'<div class="step"><div class="step-num">{i}</div>'
